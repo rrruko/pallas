@@ -847,9 +847,9 @@ where
 
         let inner: Vec<T> = d.decode_with(ctx)?;
 
-        // if inner.is_empty() {
-        //     return Err(Error::message("decoding empty set as NonEmptySet"));
-        // }
+        if inner.is_empty() {
+            return Err(Error::message("decoding empty set as NonEmptySet"));
+        }
 
         Ok(Self(inner))
     }

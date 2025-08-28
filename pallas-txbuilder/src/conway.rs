@@ -159,6 +159,7 @@ impl BuildConway for StagingTransaction {
         let mut mint_policies = mint
             .iter()
             .flat_map(|x| x.deref().iter())
+            //.flat_map(|x: &pallas_primitives::conway::NonEmptyMultiasset<NonZeroInt>| x.iter())
             .map(|(p, _)| *p)
             .collect::<Vec<_>>();
 
