@@ -1,4 +1,4 @@
-use std::ops::Deref;
+use std::{collections::BTreeMap, ops::Deref};
 
 use pallas_primitives::{alonzo, conway};
 
@@ -14,6 +14,7 @@ impl MultiEraValue<'_> {
                 conway::Value::Multiasset(x, assets) => {
                     let coin = *x;
                     let assets = assets
+                        .unwrap()
                         .iter()
                         .map(|(k, v)| {
                             let v = v.iter().map(|(k, v)| (k.clone(), v.into())).collect();
@@ -34,18 +35,22 @@ impl MultiEraValue<'_> {
                 alonzo::Value::Coin(x) => conway::Value::Coin(*x),
                 alonzo::Value::Multiasset(x, assets) => {
                     let coin = *x;
-                    let assets = assets
+                    let assets: Vec<(_, BTreeMap<_, _>)> = assets
                         .iter()
                         .filter_map(|(k, v)| {
                             let v: Vec<(conway::Bytes, conway::PositiveCoin)> = v
                                 .iter()
                                 .filter_map(|(k, v)| Some((k.clone(), (*v).try_into().ok()?)))
                                 .collect();
-                            Some((*k, conway::NonEmptyKeyValuePairs::from_vec(v)?))
+                            if v.is_empty() {
+                                None
+                            } else {
+                                Some((*k, v.into_iter().collect()))
+                            }
                         })
                         .collect();
-                    if let Some(assets) = conway::NonEmptyKeyValuePairs::from_vec(assets) {
-                        conway::Value::Multiasset(coin, assets)
+                    if !assets.is_empty() {
+                        conway::Value::Multiasset(coin, conway::Multiasset::from_iter(assets))
                     } else {
                         conway::Value::Coin(coin)
                     }
@@ -92,6 +97,7 @@ impl MultiEraValue<'_> {
             Self::Conway(x) => match x.deref() {
                 conway::Value::Coin(_) => vec![],
                 conway::Value::Multiasset(_, x) => x
+                    .unwrap()
                     .iter()
                     .map(|(k, v)| MultiEraPolicyAssets::ConwayOutput(k, v))
                     .collect(),

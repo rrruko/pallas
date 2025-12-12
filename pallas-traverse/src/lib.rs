@@ -2,12 +2,12 @@
 
 use pallas_codec::utils::NonZeroInt;
 use pallas_codec::utils::PositiveCoin;
-use std::{borrow::Cow, fmt::Display, hash::Hash as StdHash};
+use std::{borrow::Cow, collections::BTreeMap, fmt::Display, hash::Hash as StdHash};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use pallas_codec::utils::{KeepRaw, KeyValuePairs, NonEmptyKeyValuePairs};
+use pallas_codec::utils::{KeepRaw, KeyValuePairs};
 use pallas_crypto::hash::Hash;
 use pallas_primitives::{alonzo, babbage, byron, conway};
 
@@ -154,11 +154,11 @@ pub enum MultiEraPolicyAssets<'b> {
     ),
     ConwayMint(
         &'b alonzo::PolicyId,
-        &'b NonEmptyKeyValuePairs<alonzo::AssetName, NonZeroInt>,
+        &'b BTreeMap<alonzo::AssetName, NonZeroInt>,
     ),
     ConwayOutput(
         &'b alonzo::PolicyId,
-        &'b NonEmptyKeyValuePairs<alonzo::AssetName, PositiveCoin>,
+        &'b BTreeMap<alonzo::AssetName, PositiveCoin>,
     ),
 }
 

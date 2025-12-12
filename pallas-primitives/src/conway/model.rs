@@ -30,7 +30,80 @@ pub use crate::babbage::OperationalCert;
 
 pub use crate::babbage::Header;
 
-pub type Multiasset<A> = NonEmptyKeyValuePairs<PolicyId, NonEmptyKeyValuePairs<AssetName, A>>;
+#[derive(Serialize, Deserialize, Debug, Encode, PartialEq, Eq, Clone)]
+pub struct Multiasset<A>(#[n(0)] BTreeMap<PolicyId, BTreeMap<AssetName, A>>);
+
+impl<A> Multiasset<A> {
+    pub fn unwrap(&self) -> &BTreeMap<PolicyId, BTreeMap<AssetName, A>> {
+        &self.0
+    }
+
+    pub fn new(x: BTreeMap<PolicyId, BTreeMap<AssetName, A>>) -> Self {
+        Self(x)
+    }
+}
+
+impl<A, const N: usize> From<[(PolicyId, BTreeMap<AssetName, A>); N]> for Multiasset<A>
+where
+    BTreeMap<PolicyId, BTreeMap<AssetName, A>>: From<[(PolicyId, BTreeMap<AssetName, A>); N]>,
+{
+    fn from(x: [(PolicyId, BTreeMap<AssetName, A>); N]) -> Self {
+        Multiasset(BTreeMap::<PolicyId, BTreeMap<AssetName, A>>::from(x))
+    }
+}
+
+impl<A> FromIterator<(PolicyId, BTreeMap<AssetName, A>)> for Multiasset<A> {
+    fn from_iter<I: IntoIterator<Item = (PolicyId, BTreeMap<AssetName, A>)>>(iter: I) -> Self {
+        Multiasset(BTreeMap::<PolicyId, BTreeMap<AssetName, A>>::from_iter(
+            iter,
+        ))
+    }
+}
+
+impl<A> std::ops::Deref for Multiasset<A> {
+    type Target = BTreeMap<PolicyId, BTreeMap<AssetName, A>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'b, C, A: minicbor::Decode<'b, C>> minicbor::Decode<'b, C> for Multiasset<A> {
+    fn decode(d: &mut minicbor::Decoder<'b>, ctx: &mut C) -> Result<Self, minicbor::decode::Error> {
+        let policies: BTreeMap<PolicyId, BTreeMap<AssetName, A>> = d.decode_with(ctx)?;
+
+        // In Conway, all policies must be nonempty, and all amounts must be nonzero.
+        // We always parameterize Multiasset with NonZeroInt in practice, but maybe it
+        // should be monomorphic?
+        for assets in policies.values() {
+            if assets.is_empty() {
+                return Err(minicbor::decode::Error::message("Policy must not be empty"));
+            }
+        }
+
+        let result = Multiasset(policies);
+        if !is_multiasset_small_enough(&result) {
+            return Err(minicbor::decode::Error::message(
+                "Multiasset must not exceed size limit",
+            ));
+        }
+        Ok(result)
+    }
+}
+
+fn is_multiasset_small_enough<T>(ma: &Multiasset<T>) -> bool {
+    let per_asset_size = 44;
+    let per_policy_size = 28;
+
+    let policy_count = ma.0.len();
+    let mut asset_count = 0;
+    for assets in ma.0.values() {
+        asset_count += assets.len();
+    }
+
+    let size = per_asset_size * asset_count + per_policy_size * policy_count;
+    size <= 65535
+}
 
 pub type Mint = Multiasset<NonZeroInt>;
 
@@ -49,7 +122,7 @@ impl<C> minicbor::Encode<C> for Value {
         match self {
             Value::Coin(coin) => {
                 e.encode(coin)?;
-            },
+            }
             Value::Multiasset(coin, ma) => {
                 e.array(2)?;
                 e.encode(coin)?;
@@ -60,11 +133,8 @@ impl<C> minicbor::Encode<C> for Value {
     }
 }
 
-impl<'b, Ctx> minicbor::Decode<'b, Ctx> for Value
-where
-    Ctx: ValidationContext
-{
-    fn decode(d: &mut minicbor::Decoder<'b>, ctx: &mut Ctx) -> Result<Self, minicbor::decode::Error> {
+impl<'b, C> minicbor::Decode<'b, C> for Value {
+    fn decode(d: &mut minicbor::Decoder<'b>, ctx: &mut C) -> Result<Self, minicbor::decode::Error> {
         match d.datatype()? {
             Type::U8 | Type::U16 | Type::U32 | Type::U64 => {
                 let coin = d.decode_with(ctx)?;
@@ -76,120 +146,11 @@ where
                 let multiasset = d.decode_with(ctx)?;
                 Ok(Value::Multiasset(coin, multiasset))
             }
-            t => {
-                Err(minicbor::decode::Error::message(format!("Unexpected datatype {}", t)))
-            }
+            t => Err(minicbor::decode::Error::message(format!(
+                "Unexpected datatype {}",
+                t
+            ))),
         }
-    }
-}
-
-pub trait ValidationContext {
-    fn push_error(&mut self, s: String) -> Result<(), minicbor::decode::Error>;
-    fn get_errors(&self) -> &[String];
-}
-
-impl ValidationContext for () {
-    fn push_error(&mut self, _s: String) -> Result<(), minicbor::decode::Error> {
-        Ok(())
-    }
-    fn get_errors(&self) -> &[String] {
-        &[]
-    }
-}
-
-pub struct AccumulatingContext {
-    errors: Vec<String>,
-}
-
-impl AccumulatingContext {
-    pub fn new() -> Self {
-        AccumulatingContext {
-            errors: vec![]
-        }
-    }
-}
-
-impl ValidationContext for AccumulatingContext {
-    fn push_error(&mut self, s: String) -> Result<(), minicbor::decode::Error> {
-        self.errors.push(s);
-        Ok(())
-    }
-    fn get_errors(&self) -> &[String] {
-        &self.errors
-    }
-}
-
-pub struct TerminatingContext {
-}
-
-impl TerminatingContext {
-    pub fn new() -> Self {
-        TerminatingContext {
-        }
-    }
-}
-
-impl ValidationContext for TerminatingContext {
-    fn push_error(&mut self, s: String) -> Result<(), minicbor::decode::Error> {
-        Err(minicbor::decode::Error::message(format!("Failed strict validation: {}", s)))
-    }
-    fn get_errors(&self) -> &[String] {
-        &[]
-    }
-}
-
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub struct Strict<T> {
-    inner: T,
-}
-
-impl<T> Strict<T> {
-    pub fn unwrap(self) -> T {
-        self.inner
-    }
-}
-
-impl<'b, T, C> minicbor::Decode<'b, C> for Strict<T>
-where
-    T: minicbor::Decode<'b, TerminatingContext>
-{
-    fn decode(d: &mut minicbor::Decoder<'b>, _ctx: &mut C) -> Result<Self, minicbor::decode::Error> {
-        let mut ctx = TerminatingContext::new();
-        let inner: T = d.decode_with(&mut ctx)?;
-        Ok(Strict {
-            inner
-        })
-    }
-}
-
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub struct StrictVerbose<T> {
-    inner: T,
-}
-
-impl<T> StrictVerbose<T> {
-    pub fn unwrap(self) -> T {
-        self.inner
-    }
-}
-
-impl<'b, T, C> minicbor::Decode<'b, C> for StrictVerbose<T>
-where
-    T: minicbor::Decode<'b, AccumulatingContext>
-{
-    fn decode(d: &mut minicbor::Decoder<'b>, _ctx: &mut C) -> Result<Self, minicbor::decode::Error> {
-        let mut ctx = AccumulatingContext::new();
-        let inner: T = d.decode_with(&mut ctx)?;
-        let errs = ctx.get_errors();
-        if !errs.is_empty() {
-            let s = errs.join(";");
-            return Err(minicbor::decode::Error::message(
-                    format!("Failed strict validation: {}", s)
-            ));
-        }
-        Ok(StrictVerbose {
-            inner
-        })
     }
 }
 
@@ -852,38 +813,41 @@ enum TxBodyField<T1> {
     Donation(Option<PositiveCoin>),
 }
 
-fn decode_tx_body_field<'b, T1, Ctx>(d: &mut minicbor::Decoder<'b>, k: u64, ctx: &mut Ctx) -> Result<TxBodyField<T1>, minicbor::decode::Error>
+fn decode_tx_body_field<'b, T1, C>(
+    d: &mut minicbor::Decoder<'b>,
+    k: u64,
+    ctx: &mut C,
+) -> Result<TxBodyField<T1>, minicbor::decode::Error>
 where
-    Ctx: ValidationContext,
-    T1: minicbor::Decode<'b, Ctx>
+    T1: minicbor::Decode<'b, C>,
 {
     match k {
         0 => {
             let inputs = d.decode_with(ctx)?;
             Ok(TxBodyField::Inputs(inputs))
-        },
+        }
         1 => {
             let outputs = d.decode_with(ctx)?;
             Ok(TxBodyField::Outputs(outputs))
-        },
+        }
         2 => {
             let coin = d.decode_with(ctx)?;
             Ok(TxBodyField::Fee(coin))
-        },
+        }
         3 => {
             let ttl = d.decode_with(ctx)?;
             Ok(TxBodyField::Ttl(ttl))
-        },
+        }
         4 => {
             let certificates = d.decode_with(ctx)?;
             Ok(TxBodyField::Certificates(certificates))
-        },
+        }
         5 => {
             let withdrawals = d.decode_with(ctx)?;
             Ok(TxBodyField::Withdrawals(withdrawals))
         }
         7 => {
-            let auxiliary_data_hash= d.decode_with(ctx)?;
+            let auxiliary_data_hash = d.decode_with(ctx)?;
             Ok(TxBodyField::AuxiliaryDataHash(auxiliary_data_hash))
         }
         8 => {
@@ -938,7 +902,10 @@ where
             let donation = d.decode_with(ctx)?;
             Ok(TxBodyField::Donation(donation))
         }
-        k => Err(minicbor::decode::Error::message(format!("Unknown txbody field key {}", k)))
+        k => Err(minicbor::decode::Error::message(format!(
+            "Unknown txbody field key {}",
+            k
+        ))),
     }
 }
 
@@ -946,42 +913,47 @@ struct TxBodyFields<T1> {
     entries: BTreeMap<u64, Vec<TxBodyField<T1>>>,
 }
 
-impl <'b, T1, Ctx> minicbor::Decode<'b, Ctx> for TxBodyFields<T1>
+impl<'b, T1, C> minicbor::Decode<'b, C> for TxBodyFields<T1>
 where
-    T1: Clone + minicbor::Decode<'b, Ctx>,
-    Ctx: ValidationContext
+    T1: Clone + minicbor::Decode<'b, C>,
 {
-    fn decode(d: &mut minicbor::Decoder<'b>, ctx: &mut Ctx) -> Result<Self, minicbor::decode::Error> {
+    fn decode(d: &mut minicbor::Decoder<'b>, ctx: &mut C) -> Result<Self, minicbor::decode::Error> {
         let mut entries = BTreeMap::new();
         let map_size = d.map()?;
         match map_size {
-            None => {
-                loop {
-                    let ty = d.datatype()?;
-                    if ty == Type::Break {
-                        d.skip()?;
-                        break;
-                    }
-                    let k = d.u64()?;
-                    let v = decode_tx_body_field(d, k, ctx)?;
-                    entries.entry(k).and_modify(|ar: &mut Vec<TxBodyField<T1>>| ar.push(v.clone())).or_insert(vec![v]);
+            None => loop {
+                let ty = d.datatype()?;
+                if ty == Type::Break {
+                    d.skip()?;
+                    break;
                 }
+                let k = d.u64()?;
+                let v = decode_tx_body_field(d, k, ctx)?;
+                entries
+                    .entry(k)
+                    .and_modify(|ar: &mut Vec<TxBodyField<T1>>| ar.push(v.clone()))
+                    .or_insert(vec![v]);
             },
             Some(n) => {
                 for _ in 0..n {
                     let k = d.u64()?;
                     let v = decode_tx_body_field(d, k, ctx)?;
-                    entries.entry(k).and_modify(|ar: &mut Vec<TxBodyField<T1>>| ar.push(v.clone())).or_insert(vec![v]);
+                    entries
+                        .entry(k)
+                        .and_modify(|ar: &mut Vec<TxBodyField<T1>>| ar.push(v.clone()))
+                        .or_insert(vec![v]);
                 }
             }
         }
-        Ok(TxBodyFields {
-            entries
-        })
+        Ok(TxBodyFields { entries })
     }
 }
 
-fn make_basic_tx_body<T1>(inputs: Set<TransactionInput>, outputs: Vec<T1>, fee: Coin) -> PseudoTransactionBody<T1> {
+fn make_basic_tx_body<T1>(
+    inputs: Set<TransactionInput>,
+    outputs: Vec<T1>,
+    fee: Coin,
+) -> PseudoTransactionBody<T1> {
     PseudoTransactionBody {
         inputs,
         outputs,
@@ -1006,17 +978,21 @@ fn make_basic_tx_body<T1>(inputs: Set<TransactionInput>, outputs: Vec<T1>, fee: 
     }
 }
 
-fn set_tx_body_field<'a, T1>(txbody: &mut PseudoTransactionBody<T1>, index: u64, field: TxBodyField<T1>) -> Result<(), String>
+fn set_tx_body_field<'a, T1>(
+    txbody: &mut PseudoTransactionBody<T1>,
+    index: u64,
+    field: TxBodyField<T1>,
+) -> Result<(), String>
 where
-    T1: Debug 
+    T1: Debug,
 {
     match (index, field) {
         (0, TxBodyField::Inputs(i)) => {
             txbody.inputs = i;
-        },
+        }
         (1, TxBodyField::Outputs(o)) => {
             txbody.outputs = o;
-        },
+        }
         (2, TxBodyField::Fee(f)) => {
             txbody.fee = f;
         }
@@ -1071,52 +1047,62 @@ where
         (22, TxBodyField::Donation(d)) => {
             txbody.donation = d;
         }
-        (ix, f) => {
-            return Err(format!("Wrong index {} for txbody field {:?}", ix, f))
-        }
+        (ix, f) => return Err(format!("Wrong index {} for txbody field {:?}", ix, f)),
     }
     Ok(())
 }
 
-impl <'b, T1, Ctx> minicbor::Decode<'b, Ctx> for PseudoTransactionBody<T1>
+impl<'b, T1, C> minicbor::Decode<'b, C> for PseudoTransactionBody<T1>
 where
-    T1: Clone + Debug + minicbor::Decode<'b, Ctx>,
-    Ctx: ValidationContext
+    T1: Clone + Debug + minicbor::Decode<'b, C>,
 {
-    fn decode(d: &mut minicbor::Decoder<'b>, ctx: &mut Ctx) -> Result<Self, minicbor::decode::Error> {
+    fn decode(d: &mut minicbor::Decoder<'b>, ctx: &mut C) -> Result<Self, minicbor::decode::Error> {
         let fields: TxBodyFields<T1> = d.decode_with(ctx)?;
         let entries = fields.entries;
         let inputs = entries.get(&0).and_then(|v| v.first());
         let outputs = entries.get(&1).and_then(|v| v.first());
         let fee = entries.get(&2).and_then(|v| v.first());
         let mut tx_body = match (inputs, outputs, fee) {
-            (Some(TxBodyField::Inputs(inputs)), Some(TxBodyField::Outputs(outputs)), Some(TxBodyField::Fee(fee))) => {
-                make_basic_tx_body(inputs.clone(), outputs.clone(), *fee)
-            },
+            (
+                Some(TxBodyField::Inputs(inputs)),
+                Some(TxBodyField::Outputs(outputs)),
+                Some(TxBodyField::Fee(fee)),
+            ) => make_basic_tx_body(inputs.clone(), outputs.clone(), *fee),
             _ => {
-                return Err(minicbor::decode::Error::message("inputs, outputs, and fee fields are required"))
-            },
+                return Err(minicbor::decode::Error::message(
+                    "inputs, outputs, and fee fields are required",
+                ))
+            }
         };
         for (key, val) in entries {
             if val.len() > 1 {
-                ctx.push_error(format!("duplicate txbody entries for key {}", key))?;
+                return Err(minicbor::decode::Error::message(format!(
+                    "duplicate txbody entries for key {}",
+                    key
+                )));
             }
             match val.first() {
                 Some(first) => {
                     let result = set_tx_body_field(&mut tx_body, key, first.clone());
                     if let Err(e) = result {
-                        return Err(minicbor::decode::Error::message(
-                                format!("could not set txbody field: {}", e)
-                        ));
+                        return Err(minicbor::decode::Error::message(format!(
+                            "could not set txbody field: {}",
+                            e
+                        )));
                     }
-                },
+                }
                 None => {
                     // This is impossible because we always initialize TxBodyFields entries with
                     // singleton arrays. Could maybe use a NonEmpty Vec type to eliminate this
                     // branch
-                    return Err(minicbor::decode::Error::message("TxBodyFields entry was empty"))
+                    return Err(minicbor::decode::Error::message(
+                        "TxBodyFields entry was empty",
+                    ));
                 }
             }
+        }
+        if tx_body.mint.as_ref().map_or(false, |x| x.is_empty()) {
+            return Err(minicbor::decode::Error::message("mint must not be empty"));
         }
         Ok(tx_body)
     }
@@ -1124,8 +1110,8 @@ where
 
 //#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
 //pub struct NonEmptyMap<K, V> {
-//    #[serde(bound(deserialize = "K: Deserialize<'de> + Ord, V: Deserialize<'de>"))]
-//    map: BTreeMap<K, V>
+//    #[serde(bound(deserialize = "K: Deserialize<'de> + Ord, V:
+// Deserialize<'de>"))]    map: BTreeMap<K, V>
 //}
 //
 //impl<K, V, C> minicbor::Encode<C> for NonEmptyMap<K, V>
@@ -1149,9 +1135,9 @@ where
 //    V: minicbor::Decode<'b, Ctx>,
 //    Ctx: ValidationContext
 //{
-//    fn decode(d: &mut minicbor::Decoder<'b>, ctx: &mut Ctx) -> Result<Self, minicbor::decode::Error> {
-//        let map: BTreeMap<K, V> = d.decode_with(ctx)?;
-//        if map.is_empty() {
+//    fn decode(d: &mut minicbor::Decoder<'b>, ctx: &mut Ctx) -> Result<Self,
+// minicbor::decode::Error> {        let map: BTreeMap<K, V> =
+// d.decode_with(ctx)?;        if map.is_empty() {
 //            ctx.push_error("map must not be empty".to_string())?;
 //        }
 //        Ok(NonEmptyMap { map })
@@ -1165,7 +1151,6 @@ where
 //        &self.map
 //    }
 //}
-
 
 //#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
 //pub struct NonEmptyMultiasset<T: Clone> {
@@ -1190,13 +1175,13 @@ where
 //    T: Clone + minicbor::Decode<'b, Ctx>,
 //    Ctx: ValidationContext
 //{
-//    fn decode(d: &mut minicbor::Decoder<'b>, ctx: &mut Ctx) -> Result<Self, minicbor::decode::Error> {
-//        let asset: Multiasset<T> = d.decode_with(ctx)?;
-//        if let NonEmptyKeyValuePairs::Def(ref v) = asset && v.is_empty() {
-//            ctx.push_error("multiasset must not be empty".to_string())?;
-//        } else if let NonEmptyKeyValuePairs::Def(ref v) = asset && v.is_empty() {
-//            ctx.push_error("multiasset must not be empty".to_string())?;
-//        }
+//    fn decode(d: &mut minicbor::Decoder<'b>, ctx: &mut Ctx) -> Result<Self,
+// minicbor::decode::Error> {        let asset: Multiasset<T> =
+// d.decode_with(ctx)?;        if let NonEmptyKeyValuePairs::Def(ref v) = asset
+// && v.is_empty() {            ctx.push_error("multiasset must not be
+// empty".to_string())?;        } else if let NonEmptyKeyValuePairs::Def(ref v)
+// = asset && v.is_empty() {            ctx.push_error("multiasset must not be
+// empty".to_string())?;        }
 //        Ok(NonEmptyMultiasset { asset })
 //    }
 //}
@@ -1213,8 +1198,8 @@ where
 //    pub fn from_multiasset(ma: Multiasset<A>) -> Option<Self> {
 //        if let NonEmptyKeyValuePairs::Def(ref v) = ma && v.is_empty() {
 //            None
-//        } else if let NonEmptyKeyValuePairs::Indef(ref v) = ma && v.is_empty() {
-//            None
+//        } else if let NonEmptyKeyValuePairs::Indef(ref v) = ma && v.is_empty()
+// {            None
 //        } else {
 //            Some(NonEmptyMultiasset {
 //                asset: ma,
@@ -2025,13 +2010,14 @@ where
     }
 }
 
-// FIXME: re-exporting here means it does not use the above PostAlonzoAuxiliaryData; instead, it
-// uses the one defined in the alonzo module, which only supports plutus V1 scripts
+// FIXME: re-exporting here means it does not use the above
+// PostAlonzoAuxiliaryData; instead, it uses the one defined in the alonzo
+// module, which only supports plutus V1 scripts
 //
 // Same problem exists in the babbage module
 //
-// should probably take a type parameter for the post-alonzo variant or just define a whole
-// separate type here and in babbage
+// should probably take a type parameter for the post-alonzo variant or just
+// define a whole separate type here and in babbage
 pub use crate::alonzo::AuxiliaryData;
 
 use crate::babbage::MintedHeader;
@@ -2152,69 +2138,80 @@ mod tests {
 
     #[cfg(test)]
     mod tests_value {
-        use super::super::AccumulatingContext;
         use super::super::Mint;
         use super::super::Multiasset;
         use super::super::NonZeroInt;
         use super::super::Value;
-        use super::super::Strict;
         use pallas_codec::minicbor;
         use std::collections::BTreeMap;
 
         // a value can have zero coins and omit the multiasset
         #[test]
         fn decode_zero_value() {
-            let ma: Strict<Value> = minicbor::decode_with(&hex::decode("00").unwrap(), &mut AccumulatingContext::new()).unwrap();
-            assert_eq!(ma.inner, Value::Coin(0));
+            let ma: Value = minicbor::decode(&hex::decode("00").unwrap()).unwrap();
+            assert_eq!(ma, Value::Coin(0));
         }
 
         // a value can have zero coins and an empty multiasset map
         // Note: this will roundtrip back to "00"
         #[test]
         fn permit_definite_value() {
-            let ma: Strict<Value> = minicbor::decode_with(&hex::decode("8200a0").unwrap(), &mut AccumulatingContext::new()).unwrap();
-            assert_eq!(ma.inner, Value::Multiasset(0, Multiasset(BTreeMap::new())));
+            let ma: Value = minicbor::decode(&hex::decode("8200a0").unwrap()).unwrap();
+            assert_eq!(ma, Value::Multiasset(0, Multiasset(BTreeMap::new())));
         }
 
         // Indefinite-encoded value is valid
         #[test]
         fn permit_indefinite_value() {
-            let ma: Strict<Value> = minicbor::decode_with(&hex::decode("9f00a0ff").unwrap(), &mut AccumulatingContext::new()).unwrap();
-            assert_eq!(ma.inner, Value::Multiasset(0, Multiasset(BTreeMap::new())));
+            let ma: Value = minicbor::decode(&hex::decode("9f00a0ff").unwrap()).unwrap();
+            assert_eq!(ma, Value::Multiasset(0, Multiasset(BTreeMap::new())));
         }
 
         // the asset sub-map of a policy map in a multiasset must not be null in Conway
         #[test]
         fn reject_null_tokens() {
-            let ma: Result<Strict<Value>, _> = minicbor::decode_with(&hex::decode("8200a1581c00000000000000000000000000000000000000000000000000000000a0").unwrap(), &mut AccumulatingContext::new());
+            let ma: Result<Value, _> = minicbor::decode(
+                &hex::decode(
+                    "8200a1581c00000000000000000000000000000000000000000000000000000000a0",
+                )
+                .unwrap(),
+            );
             assert_eq!(
                 ma.map_err(|e| e.to_string()),
-                Err("decode error: Failed strict validation: Policy must not be empty".to_owned())
+                Err("decode error: Policy must not be empty".to_owned())
             );
         }
 
-        // the asset sub-map of a policy map in a multiasset must not have any zero values in
-        // Conway
+        // the asset sub-map of a policy map in a multiasset must not have any zero
+        // values in Conway
         #[test]
         fn reject_zero_tokens() {
-            let ma: Result<Strict<Value>, _> = minicbor::decode_with(&hex::decode("8200a1581c00000000000000000000000000000000000000000000000000000000a14000").unwrap(), &mut AccumulatingContext::new());
+            let ma: Result<Value, _> = minicbor::decode(
+                &hex::decode(
+                    "8200a1581c00000000000000000000000000000000000000000000000000000000a14000",
+                )
+                .unwrap(),
+            );
             assert_eq!(
                 ma.map_err(|e| e.to_string()),
-                Err("decode error: PositiveCoin must not be 0".to_owned())
+                Err("decode error: decoding 0 as PositiveCoin".to_owned())
             );
         }
 
         #[test]
         fn multiasset_reject_null_tokens() {
-            let ma: Result<Strict<Multiasset<NonZeroInt>>, _> = minicbor::decode_with(&hex::decode("a1581c00000000000000000000000000000000000000000000000000000000a0").unwrap(), &mut AccumulatingContext::new());
+            let ma: Result<Multiasset<NonZeroInt>, _> = minicbor::decode(
+                &hex::decode("a1581c00000000000000000000000000000000000000000000000000000000a0")
+                    .unwrap(),
+            );
             assert_eq!(
                 ma.map_err(|e| e.to_string()),
-                Err("decode error: Failed strict validation: Policy must not be empty".to_owned())
+                Err("decode error: Policy must not be empty".to_owned())
             );
         }
 
-        // the decoder for MaryValue in the haskell node rejects inputs that are "too big" as
-        // defined by `isMultiAssetSmallEnough`
+        // the decoder for MaryValue in the haskell node rejects inputs that are "too
+        // big" as defined by `isMultiAssetSmallEnough`
         #[test]
         fn multiasset_not_too_big() {
             // Creating CBOR representation of a value with 1500 policies
@@ -2227,38 +2224,44 @@ mod tests {
                 // minimal token map (conway requires nonempty asset maps)
                 s += "a14001";
             }
-            let ma: Result<Strict<Multiasset<NonZeroInt>>, _> = minicbor::decode_with(&hex::decode(s).unwrap(), &mut AccumulatingContext::new());
+            let ma: Result<Multiasset<NonZeroInt>, _> = minicbor::decode(&hex::decode(s).unwrap());
             match ma {
                 Ok(_) => panic!("decode succeded but should fail"),
-                Err(e) => assert_eq!(e.to_string(), "decode error: Failed strict validation: Multiasset must not exceed size limit")
+                Err(e) => assert_eq!(
+                    e.to_string(),
+                    "decode error: Multiasset must not exceed size limit"
+                ),
             }
         }
 
         #[test]
         fn mint_reject_null_tokens() {
-            let ma: Result<Strict<Mint>, _> = minicbor::decode_with(&hex::decode("a1581c00000000000000000000000000000000000000000000000000000000a0").unwrap(), &mut AccumulatingContext::new());
+            let ma: Result<Mint, _> = minicbor::decode(
+                &hex::decode("a1581c00000000000000000000000000000000000000000000000000000000a0")
+                    .unwrap(),
+            );
             assert_eq!(
                 ma.map_err(|e| e.to_string()),
-                Err("decode error: Failed strict validation: Policy must not be empty".to_owned())
+                Err("decode error: Policy must not be empty".to_owned())
             );
         }
     }
 
     mod tests_witness_set {
-        use super::super::{AccumulatingContext, Bytes, VKeyWitness, WitnessSet, Strict};
+        use super::super::{Bytes, VKeyWitness, WitnessSet};
         use pallas_codec::minicbor;
 
         #[test]
         fn decode_empty_witness_set() {
             let witness_set_bytes = hex::decode("a0").unwrap();
-            let ws: WitnessSet = minicbor::decode_with(&witness_set_bytes, &mut AccumulatingContext::new()).unwrap();
+            let ws: WitnessSet = minicbor::decode(&witness_set_bytes).unwrap();
             assert_eq!(ws.vkeywitness, None);
         }
 
         #[test]
         fn decode_witness_set_having_vkeywitness_untagged_must_be_nonempty() {
             let witness_set_bytes = hex::decode("a10080").unwrap();
-            let ws: Result<Strict<WitnessSet>, _> = minicbor::decode_with(&witness_set_bytes, &mut AccumulatingContext::new());
+            let ws: Result<WitnessSet, _> = minicbor::decode(&witness_set_bytes);
             assert_eq!(
                 ws.map_err(|e| e.to_string()),
                 Err("decode error: decoding empty set as NonEmptySet".to_owned())
@@ -2268,31 +2271,31 @@ mod tests {
         #[test]
         fn decode_witness_set_having_vkeywitness_untagged_singleton() {
             let witness_set_bytes = hex::decode("a10081824040").unwrap();
-            let ws: Strict<WitnessSet> = minicbor::decode_with(&witness_set_bytes, &mut AccumulatingContext::new()).unwrap();
+            let ws: WitnessSet = minicbor::decode(&witness_set_bytes).unwrap();
 
             let expected = VKeyWitness {
                 vkey: Bytes::from(vec![]),
                 signature: Bytes::from(vec![]),
             };
-            assert_eq!(ws.inner.vkeywitness.map(|s| s.to_vec()), Some(vec![expected]));
+            assert_eq!(ws.vkeywitness.map(|s| s.to_vec()), Some(vec![expected]));
         }
 
         #[test]
         fn decode_witness_set_having_vkeywitness_conwaystyle_singleton() {
             let witness_set_bytes = hex::decode("a100d9010281824040").unwrap();
-            let ws: Strict<WitnessSet> = minicbor::decode_with(&witness_set_bytes, &mut AccumulatingContext::new()).unwrap();
+            let ws: WitnessSet = minicbor::decode(&witness_set_bytes).unwrap();
 
             let expected = VKeyWitness {
                 vkey: Bytes::from(vec![]),
                 signature: Bytes::from(vec![]),
             };
-            assert_eq!(ws.inner.vkeywitness.map(|s| s.to_vec()), Some(vec![expected]));
+            assert_eq!(ws.vkeywitness.map(|s| s.to_vec()), Some(vec![expected]));
         }
 
         #[test]
         fn decode_witness_set_having_vkeywitness_conwaystyle_must_be_nonempty() {
             let witness_set_bytes = hex::decode("a100d9010280").unwrap();
-            let ws: Result<Strict<WitnessSet>, _> = minicbor::decode_with(&witness_set_bytes, &mut AccumulatingContext::new());
+            let ws: Result<WitnessSet, _> = minicbor::decode(&witness_set_bytes);
             assert_eq!(
                 ws.map_err(|e| e.to_string()),
                 Err("decode error: decoding empty set as NonEmptySet".to_owned())
@@ -2303,45 +2306,46 @@ mod tests {
         fn decode_witness_set_having_vkeywitness_reject_nonsense_tag() {
             // VKey witness set with nonsense tag 259
             let witness_set_bytes = hex::decode("a100d9010381824040").unwrap();
-            let ws: Result<Strict<WitnessSet>, _> = minicbor::decode_with(&witness_set_bytes, &mut AccumulatingContext::new());
+            let ws: Result<WitnessSet, _> = minicbor::decode(&witness_set_bytes);
             assert_eq!(
                 ws.map_err(|e| e.to_string()),
                 Err("decode error: Unrecognised tag: Tag(259)".to_owned())
             );
         }
 
-        // Unclear what the behavior should be when there are duplicates. The haskell code
-        // allows duplicate entries in the CBOR but represents the vkey witnesses using a
-        // set data type, so that the resulting data structure will only have one element.
-        // However, our NonEmptySet type is secretly a vector and does not prevent duplicates.
-        // Do we ever hash witness sets? i.e. do we need to remember the original bytes?
+        // Unclear what the behavior should be when there are duplicates. The haskell
+        // code allows duplicate entries in the CBOR but represents the vkey
+        // witnesses using a set data type, so that the resulting data structure
+        // will only have one element. However, our NonEmptySet type is secretly
+        // a vector and does not prevent duplicates. Do we ever hash witness
+        // sets? i.e. do we need to remember the original bytes?
         #[test]
         fn decode_witness_set_having_vkeywitness_duplicate_entries() {
             let witness_set_bytes = hex::decode("a100d9010282824040824040").unwrap();
-            let ws: Strict<WitnessSet> = minicbor::decode_with(&witness_set_bytes, &mut AccumulatingContext::new()).unwrap();
+            let ws: WitnessSet = minicbor::decode(&witness_set_bytes).unwrap();
 
             let expected = VKeyWitness {
                 vkey: Bytes::from(vec![]),
                 signature: Bytes::from(vec![]),
             };
-            assert_eq!(ws.inner.vkeywitness.map(|s| s.to_vec()), Some(vec![expected.clone(), expected]));
+            assert_eq!(
+                ws.vkeywitness.map(|s| s.to_vec()),
+                Some(vec![expected.clone(), expected])
+            );
         }
-
     }
 
     mod tests_auxdata {
         use super::super::AuxiliaryData;
         use pallas_codec::minicbor;
-        use std::collections::BTreeMap;
 
         #[test]
         fn decode_auxdata_shelley_format_empty() {
             let auxdata_bytes = hex::decode("a0").unwrap();
-            let auxdata: AuxiliaryData =
-                minicbor::decode(&auxdata_bytes).unwrap();
+            let auxdata: AuxiliaryData = minicbor::decode(&auxdata_bytes).unwrap();
             match auxdata {
                 AuxiliaryData::Shelley(s) => {
-                    assert_eq!(s, BTreeMap::new());
+                    assert!(s.is_empty());
                 }
                 _ => {
                     panic!("Unexpected variant");
@@ -2352,11 +2356,10 @@ mod tests {
         #[test]
         fn decode_auxdata_shelley_ma_format_empty() {
             let auxdata_bytes = hex::decode("82a080").unwrap();
-            let auxdata: AuxiliaryData =
-                minicbor::decode(&auxdata_bytes).unwrap();
+            let auxdata: AuxiliaryData = minicbor::decode(&auxdata_bytes).unwrap();
             match auxdata {
                 AuxiliaryData::ShelleyMa(s) => {
-                    assert_eq!(s.transaction_metadata, BTreeMap::new());
+                    assert!(s.transaction_metadata.is_empty());
                 }
                 _ => {
                     panic!("Unexpected variant");
@@ -2367,8 +2370,7 @@ mod tests {
         #[test]
         fn decode_auxdata_alonzo_format_empty() {
             let auxdata_bytes = hex::decode("d90103a0").unwrap();
-            let auxdata: AuxiliaryData =
-                minicbor::decode(&auxdata_bytes).unwrap();
+            let auxdata: AuxiliaryData = minicbor::decode(&auxdata_bytes).unwrap();
             match auxdata {
                 AuxiliaryData::PostAlonzo(a) => {
                     assert_eq!(a.metadata, None);
@@ -2381,25 +2383,26 @@ mod tests {
     }
 
     mod tests_transaction {
-        use super::super::{AccumulatingContext, TransactionBody, Strict};
+        use super::super::TransactionBody;
         use pallas_codec::minicbor;
 
-        // A simple tx with just inputs, outputs, and fee. Address is not well-formed, since the
-        // 00 header implies both a payment part and a staking part are present.
+        // A simple tx with just inputs, outputs, and fee. Address is not well-formed,
+        // since the 00 header implies both a payment part and a staking part
+        // are present.
         #[test]
         fn decode_simple_tx() {
             let tx_bytes = hex::decode("a300828258206767676767676767676767676767676767676767676767676767676767676767008258206767676767676767676767676767676767676767676767676767676767676767000200018182581c000000000000000000000000000000000000000000000000000000001a04000000").unwrap();
-            let tx: Strict<TransactionBody> = minicbor::decode_with(&tx_bytes, &mut AccumulatingContext::new()).unwrap();
-            let tx: TransactionBody = tx.inner;
+            let tx: TransactionBody = minicbor::decode(&tx_bytes).unwrap();
+            let tx: TransactionBody = tx;
             assert_eq!(tx.fee, 0);
         }
 
-        // The decoder for ConwayTxBodyRaw rejects transaction bodies missing inputs, outputs, or
-        // fee
+        // The decoder for ConwayTxBodyRaw rejects transaction bodies missing inputs,
+        // outputs, or fee
         #[test]
         fn reject_empty_tx() {
             let tx_bytes = hex::decode("a0").unwrap();
-            let tx: Result<Strict<TransactionBody<'_>>, _> = minicbor::decode_with(&tx_bytes, &mut AccumulatingContext::new());
+            let tx: Result<TransactionBody, _> = minicbor::decode(&tx_bytes);
             assert_eq!(
                 tx.map_err(|e| e.to_string()),
                 Err("decode error: inputs, outputs, and fee fields are required".to_owned())
@@ -2410,7 +2413,7 @@ mod tests {
         #[test]
         fn reject_tx_missing_outputs() {
             let tx_bytes = hex::decode("a200818258200000000000000000000000000000000000000000000000000000000000000008090200").unwrap();
-            let tx: Result<Strict<TransactionBody<'_>>, _> = minicbor::decode_with(&tx_bytes, &mut AccumulatingContext::new());
+            let tx: Result<TransactionBody, _> = minicbor::decode(&tx_bytes);
             assert_eq!(
                 tx.map_err(|e| e.to_string()),
                 Err("decode error: inputs, outputs, and fee fields are required".to_owned())
@@ -2421,30 +2424,27 @@ mod tests {
         #[test]
         fn reject_tx_missing_fee() {
             let tx_bytes = hex::decode("a20081825820000000000000000000000000000000000000000000000000000000000000000809018182581c000000000000000000000000000000000000000000000000000000001affffffff").unwrap();
-            let tx: Result<Strict<TransactionBody<'_>>, _> = minicbor::decode_with(&tx_bytes, &mut AccumulatingContext::new());
+            let tx: Result<TransactionBody, _> = minicbor::decode(&tx_bytes);
             assert_eq!(
                 tx.map_err(|e| e.to_string()),
                 Err("decode error: inputs, outputs, and fee fields are required".to_owned())
             );
         }
 
-        // The mint may not be present if it is empty
-        // TODO: equivalent tests for certs, withdrawals, collateral inputs, required signer
-        // hashes, reference inputs, voting procedures, and proposal procedures
         #[test]
         fn reject_empty_present_mint() {
             let tx_bytes = hex::decode("a400828258206767676767676767676767676767676767676767676767676767676767676767008258206767676767676767676767676767676767676767676767676767676767676767000200018182581c000000000000000000000000000000000000000000000000000000001a0400000009a0").unwrap();
-            let tx: Result<Strict<TransactionBody<'_>>, _> = minicbor::decode_with(&tx_bytes, &mut AccumulatingContext::new());
+            let tx: Result<TransactionBody, _> = minicbor::decode(&tx_bytes);
             assert_eq!(
                 tx.map_err(|e| e.to_string()),
-                Err("decode error: Failed strict validation: multiasset must not be empty".to_owned())
+                Err("decode error: mint must not be empty".to_owned())
             );
         }
 
         #[test]
         fn reject_empty_present_certs() {
             let tx_bytes = hex::decode("a400828258206767676767676767676767676767676767676767676767676767676767676767008258206767676767676767676767676767676767676767676767676767676767676767000200018182581c000000000000000000000000000000000000000000000000000000001a040000000480").unwrap();
-            let tx: Result<Strict<TransactionBody<'_>>, _> = minicbor::decode_with(&tx_bytes, &mut AccumulatingContext::new());
+            let tx: Result<TransactionBody, _> = minicbor::decode(&tx_bytes);
             assert_eq!(
                 tx.map_err(|e| e.to_string()),
                 Err("decode error: decoding empty set as NonEmptySet".to_owned())
@@ -2454,17 +2454,17 @@ mod tests {
         #[test]
         fn reject_empty_present_withdrawals() {
             let tx_bytes = hex::decode("a400828258206767676767676767676767676767676767676767676767676767676767676767008258206767676767676767676767676767676767676767676767676767676767676767000200018182581c000000000000000000000000000000000000000000000000000000001a0400000005a0").unwrap();
-            let tx: Result<Strict<TransactionBody<'_>>, _> = minicbor::decode_with(&tx_bytes, &mut AccumulatingContext::new());
+            let tx: Result<TransactionBody, _> = minicbor::decode(&tx_bytes);
             assert_eq!(
                 tx.map_err(|e| e.to_string()),
-                Err("decode error: Failed strict validation: map must not be empty".to_owned())
+                Err("decode error: decoding empty map as NonEmptyKeyValuePairs".to_owned())
             );
         }
 
         #[test]
         fn reject_empty_present_collateral_inputs() {
             let tx_bytes = hex::decode("a400828258206767676767676767676767676767676767676767676767676767676767676767008258206767676767676767676767676767676767676767676767676767676767676767000200018182581c000000000000000000000000000000000000000000000000000000001a040000000d80").unwrap();
-            let tx: Result<Strict<TransactionBody<'_>>, _> = minicbor::decode_with(&tx_bytes, &mut AccumulatingContext::new());
+            let tx: Result<TransactionBody, _> = minicbor::decode(&tx_bytes);
             assert_eq!(
                 tx.map_err(|e| e.to_string()),
                 Err("decode error: decoding empty set as NonEmptySet".to_owned())
@@ -2474,7 +2474,7 @@ mod tests {
         #[test]
         fn reject_empty_present_required_signers() {
             let tx_bytes = hex::decode("a400828258206767676767676767676767676767676767676767676767676767676767676767008258206767676767676767676767676767676767676767676767676767676767676767000200018182581c000000000000000000000000000000000000000000000000000000001a040000000e80").unwrap();
-            let tx: Result<Strict<TransactionBody<'_>>, _> = minicbor::decode_with(&tx_bytes, &mut AccumulatingContext::new());
+            let tx: Result<TransactionBody, _> = minicbor::decode(&tx_bytes);
             assert_eq!(
                 tx.map_err(|e| e.to_string()),
                 Err("decode error: decoding empty set as NonEmptySet".to_owned())
@@ -2484,17 +2484,17 @@ mod tests {
         #[test]
         fn reject_empty_present_voting_procedures() {
             let tx_bytes = hex::decode("a400828258206767676767676767676767676767676767676767676767676767676767676767008258206767676767676767676767676767676767676767676767676767676767676767000200018182581c000000000000000000000000000000000000000000000000000000001a0400000013a0").unwrap();
-            let tx: Result<Strict<TransactionBody<'_>>, _> = minicbor::decode_with(&tx_bytes, &mut AccumulatingContext::new());
+            let tx: Result<TransactionBody, _> = minicbor::decode(&tx_bytes);
             assert_eq!(
                 tx.map_err(|e| e.to_string()),
-                Err("decode error: Failed strict validation: map must not be empty".to_owned())
+                Err("decode error: decoding empty map as NonEmptyKeyValuePairs".to_owned())
             );
         }
 
         #[test]
         fn reject_empty_present_proposal_procedures() {
             let tx_bytes = hex::decode("a400828258206767676767676767676767676767676767676767676767676767676767676767008258206767676767676767676767676767676767676767676767676767676767676767000200018182581c000000000000000000000000000000000000000000000000000000001a040000001480").unwrap();
-            let tx: Result<Strict<TransactionBody<'_>>, _> = minicbor::decode_with(&tx_bytes, &mut AccumulatingContext::new());
+            let tx: Result<TransactionBody, _> = minicbor::decode(&tx_bytes);
             assert_eq!(
                 tx.map_err(|e| e.to_string()),
                 Err("decode error: decoding empty set as NonEmptySet".to_owned())
@@ -2504,21 +2504,20 @@ mod tests {
         #[test]
         fn reject_empty_present_donation() {
             let tx_bytes = hex::decode("a400828258206767676767676767676767676767676767676767676767676767676767676767008258206767676767676767676767676767676767676767676767676767676767676767000200018182581c000000000000000000000000000000000000000000000000000000001a040000001600").unwrap();
-            let tx: Result<Strict<TransactionBody<'_>>, _> = minicbor::decode_with(&tx_bytes, &mut AccumulatingContext::new());
+            let tx: Result<TransactionBody, _> = minicbor::decode(&tx_bytes);
             assert_eq!(
                 tx.map_err(|e| e.to_string()),
-                Err("decode error: PositiveCoin must not be 0".to_owned())
+                Err("decode error: decoding 0 as PositiveCoin".to_owned())
             );
         }
-
 
         #[test]
         fn reject_duplicate_keys() {
             let tx_bytes = hex::decode("a40081825820000000000000000000000000000000000000000000000000000000000000000809018182581c000000000000000000000000000000000000000000000000000000001affffffff02010201").unwrap();
-            let tx: Result<Strict<TransactionBody<'_>>, _> = minicbor::decode_with(&tx_bytes, &mut AccumulatingContext::new());
+            let tx: Result<TransactionBody, _> = minicbor::decode(&tx_bytes);
             assert_eq!(
                 tx.map_err(|e| e.to_string()),
-                Err("decode error: Failed strict validation: duplicate txbody entries for key 2".to_owned())
+                Err("decode error: duplicate txbody entries for key 2".to_owned())
             );
         }
     }
