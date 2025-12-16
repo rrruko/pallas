@@ -325,7 +325,7 @@ impl<'b> MultiEraTx<'b> {
                 .transaction_body
                 .mint
                 .iter()
-                .flat_map(|x| x.iter())
+                .flat_map(|x| x.unwrap().iter())
                 .map(|(k, v)| MultiEraPolicyAssets::ConwayMint(k, v))
                 .collect(),
         }

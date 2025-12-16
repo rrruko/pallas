@@ -1,15 +1,15 @@
-use std::ops::Deref;
+use std::{collections::BTreeMap, ops::Deref};
 
 use pallas_codec::utils::CborWrap;
 use pallas_crypto::hash::Hash;
 use pallas_primitives::{
     conway::{
-        DatumOption, ExUnits as PallasExUnits, NativeScript, NetworkId, NonZeroInt, PlutusData,
-        PlutusScript, PostAlonzoTransactionOutput, PseudoScript as PallasScript,
+        DatumOption, ExUnits as PallasExUnits, Multiasset, NativeScript, NetworkId, NonZeroInt,
+        PlutusData, PlutusScript, PostAlonzoTransactionOutput, PseudoScript as PallasScript,
         PseudoTransactionOutput, Redeemer, RedeemerTag, TransactionBody, TransactionInput, Tx,
         Value, WitnessSet,
     },
-    Fragment, NonEmptyKeyValuePairs, NonEmptySet, PositiveCoin,
+    AssetName, Fragment, NonEmptySet, PolicyId, PositiveCoin,
 };
 use pallas_traverse::ComputeHash;
 
@@ -53,20 +53,19 @@ impl BuildConway for StagingTransaction {
             .map(Output::build_babbage_raw)
             .collect::<Result<Vec<_>, _>>()?;
 
-        let mint = NonEmptyKeyValuePairs::from_vec(
+        let mint: BTreeMap<PolicyId, BTreeMap<AssetName, NonZeroInt>> = BTreeMap::from_iter(
             self.mint
                 .iter()
                 .flat_map(|x| x.deref().iter())
                 .map(|(pid, assets)| {
                     (
                         Hash::<28>::from(pid.0),
-                        NonEmptyKeyValuePairs::from_vec(
+                        BTreeMap::from_iter(
                             assets
                                 .iter()
                                 .map(|(n, x)| (n.clone().into(), NonZeroInt::try_from(*x).unwrap()))
                                 .collect::<Vec<_>>(),
-                        )
-                        .unwrap(),
+                        ),
                     )
                 })
                 .collect::<Vec<_>>(),
@@ -156,11 +155,7 @@ impl BuildConway for StagingTransaction {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        let mut mint_policies = mint
-            .iter()
-            .flat_map(|x| x.deref().iter())
-            .map(|(p, _)| *p)
-            .collect::<Vec<_>>();
+        let mut mint_policies = mint.iter().map(|(p, _)| *p).collect::<Vec<_>>();
 
         mint_policies.sort_unstable_by_key(|x| *x);
 
@@ -243,7 +238,7 @@ impl BuildConway for StagingTransaction {
                 certificates: None,        // TODO
                 withdrawals: None,         // TODO
                 auxiliary_data_hash: None, // TODO (accept user input)
-                mint,
+                mint: Some(Multiasset::new(mint)),
                 script_data_hash,
                 collateral,
                 required_signers,
@@ -300,27 +295,30 @@ impl Output {
     pub fn build_babbage_raw(
         &self,
     ) -> Result<PseudoTransactionOutput<PostAlonzoTransactionOutput>, TxBuilderError> {
-        let assets = NonEmptyKeyValuePairs::from_vec(
+        let assets = BTreeMap::from_iter(
             self.assets
                 .iter()
                 .flat_map(|x| x.deref().iter())
                 .map(|(pid, assets)| {
                     (
                         pid.0.into(),
-                        assets
-                            .iter()
-                            .map(|(n, x)| (n.clone().into(), PositiveCoin::try_from(*x).unwrap()))
-                            .collect::<Vec<_>>()
-                            .try_into()
-                            .unwrap(),
+                        BTreeMap::from_iter(
+                            assets
+                                .iter()
+                                .map(|(n, x)| {
+                                    (n.clone().into(), PositiveCoin::try_from(*x).unwrap())
+                                })
+                                .collect::<Vec<_>>(),
+                        ),
                     )
                 })
                 .collect::<Vec<_>>(),
         );
 
-        let value = match assets {
-            Some(assets) => Value::Multiasset(self.lovelace, assets),
-            None => Value::Coin(self.lovelace),
+        let value = if !assets.is_empty() {
+            Value::Multiasset(self.lovelace, Multiasset::new(assets))
+        } else {
+            Value::Coin(self.lovelace)
         };
 
         let datum_option = if let Some(ref d) = self.datum {
