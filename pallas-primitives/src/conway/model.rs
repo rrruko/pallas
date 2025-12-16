@@ -1101,116 +1101,12 @@ where
                 }
             }
         }
-        if tx_body.mint.as_ref().map_or(false, |x| x.is_empty()) {
+        if tx_body.mint.as_ref().is_some_and(|x| x.is_empty()) {
             return Err(minicbor::decode::Error::message("mint must not be empty"));
         }
         Ok(tx_body)
     }
 }
-
-//#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
-//pub struct NonEmptyMap<K, V> {
-//    #[serde(bound(deserialize = "K: Deserialize<'de> + Ord, V:
-// Deserialize<'de>"))]    map: BTreeMap<K, V>
-//}
-//
-//impl<K, V, C> minicbor::Encode<C> for NonEmptyMap<K, V>
-//where
-//    K: minicbor::Encode<C> + Ord,
-//    V: minicbor::Encode<C>
-//{
-//    fn encode<W: minicbor::encode::Write>(
-//        &self,
-//        e: &mut minicbor::Encoder<W>,
-//        ctx: &mut C,
-//    ) -> Result<(), minicbor::encode::Error<W::Error>> {
-//        e.encode_with(&self.map, ctx)?;
-//        Ok(())
-//    }
-//}
-//
-//impl <'b, Ctx, K, V> minicbor::Decode<'b, Ctx> for NonEmptyMap<K, V>
-//where
-//    K: minicbor::Decode<'b, Ctx> + Eq + Ord,
-//    V: minicbor::Decode<'b, Ctx>,
-//    Ctx: ValidationContext
-//{
-//    fn decode(d: &mut minicbor::Decoder<'b>, ctx: &mut Ctx) -> Result<Self,
-// minicbor::decode::Error> {        let map: BTreeMap<K, V> =
-// d.decode_with(ctx)?;        if map.is_empty() {
-//            ctx.push_error("map must not be empty".to_string())?;
-//        }
-//        Ok(NonEmptyMap { map })
-//    }
-//}
-//
-//impl<K, V> std::ops::Deref for NonEmptyMap<K, V> {
-//    type Target = BTreeMap<K, V>;
-//
-//    fn deref(&self) -> &Self::Target {
-//        &self.map
-//    }
-//}
-
-//#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
-//pub struct NonEmptyMultiasset<T: Clone> {
-//    asset: Multiasset<T>
-//}
-//
-//impl<C, T> minicbor::Encode<C> for NonEmptyMultiasset<T>
-//where T: Clone + minicbor::Encode<C>
-//{
-//    fn encode<W: minicbor::encode::Write>(
-//        &self,
-//        e: &mut minicbor::Encoder<W>,
-//        ctx: &mut C,
-//    ) -> Result<(), minicbor::encode::Error<W::Error>> {
-//        e.encode_with(&self.asset, ctx)?;
-//        Ok(())
-//    }
-//}
-//
-//impl <'b, Ctx, T> minicbor::Decode<'b, Ctx> for NonEmptyMultiasset<T>
-//where
-//    T: Clone + minicbor::Decode<'b, Ctx>,
-//    Ctx: ValidationContext
-//{
-//    fn decode(d: &mut minicbor::Decoder<'b>, ctx: &mut Ctx) -> Result<Self,
-// minicbor::decode::Error> {        let asset: Multiasset<T> =
-// d.decode_with(ctx)?;        if let NonEmptyKeyValuePairs::Def(ref v) = asset
-// && v.is_empty() {            ctx.push_error("multiasset must not be
-// empty".to_string())?;        } else if let NonEmptyKeyValuePairs::Def(ref v)
-// = asset && v.is_empty() {            ctx.push_error("multiasset must not be
-// empty".to_string())?;        }
-//        Ok(NonEmptyMultiasset { asset })
-//    }
-//}
-//
-//impl<A> std::ops::Deref for NonEmptyMultiasset<A> {
-//    type Target = BTreeMap<PolicyId, BTreeMap<AssetName, A>>;
-//
-//    fn deref(&self) -> &Self::Target {
-//        &self.asset.0
-//    }
-//}
-//
-//impl<A> NonEmptyMultiasset<A> where A: Clone {
-//    pub fn from_multiasset(ma: Multiasset<A>) -> Option<Self> {
-//        if let NonEmptyKeyValuePairs::Def(ref v) = ma && v.is_empty() {
-//            None
-//        } else if let NonEmptyKeyValuePairs::Indef(ref v) = ma && v.is_empty()
-// {            None
-//        } else {
-//            Some(NonEmptyMultiasset {
-//                asset: ma,
-//            })
-//        }
-//    }
-//
-//    pub fn to_multiasset(self) -> Multiasset<A> {
-//        self.asset
-//    }
-//}
 
 pub type MintedTransactionBody<'a> = PseudoTransactionBody<MintedTransactionOutput<'a>>;
 
