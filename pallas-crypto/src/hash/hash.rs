@@ -15,10 +15,20 @@ impl<const BYTES: usize> Hash<BYTES> {
     }
 }
 
-impl<const BYTES: usize> From<[u8; BYTES]> for Hash<BYTES> {
-    #[inline]
-    fn from(bytes: [u8; BYTES]) -> Self {
-        Self::new(bytes)
+#[derive(Debug, thiserror::Error)]
+#[error("Expected {BYTES} bytes, got {0}")]
+pub struct SizeError<const BYTES: usize>(usize);
+
+impl<const BYTES: usize> TryFrom<&[u8]> for Hash<BYTES> {
+    type Error = SizeError<BYTES>;
+
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        if value.len() != BYTES {
+            return Err(SizeError(value.len()));
+        }
+        let mut hash = [0; BYTES];
+        hash.copy_from_slice(value);
+        Ok(Self::new(hash))
     }
 }
 
